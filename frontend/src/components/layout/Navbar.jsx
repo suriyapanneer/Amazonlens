@@ -28,8 +28,7 @@ export default function Navbar({ opportunityScore, verdict }) {
 
   return (
     <nav
-      className="app-sidebar fixed top-0 left-0 h-screen z-50 flex flex-col transition-all duration-300"
-      style={{ width: '240px' }}
+      className="fixed top-0 left-0 h-screen z-50 flex flex-col w-[240px] max-md:w-[60px] transition-all duration-300"
       style={{
         background: 'var(--glass)',
         backdropFilter: 'blur(20px)',

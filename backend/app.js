@@ -5,7 +5,13 @@ const { errorHandler } = require('./middleware/errorHandler');
 const app = express();
 
 // ── Core middleware ──────────────────────────────────────────────────────────
-app.use(cors());
+app.use(cors({
+  origin: [
+    'https://amazonlens-frontend.onrender.com',
+    'http://localhost:5173',  // keep for local dev
+  ],
+  credentials: true,
+}));
 app.use(express.json({ limit: '10mb' }));
 
 // ── Health routes (no auth required) ─────────────────────────────────────────
