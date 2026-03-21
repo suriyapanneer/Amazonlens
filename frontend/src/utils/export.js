@@ -1,0 +1,6 @@
+function toCSV(rows,cols){const h=cols.join(',');const b=rows.map(r=>cols.map(c=>{const v=r[c];if(v==null)return'';const s=String(v);return s.includes(',')||s.includes('"')?`"${s.replace(/"/g,'""')}\"`:s}).join(',')).join('\n');return`${h}\n${b}`}
+function dl(csv,name){const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=Object.assign(document.createElement('a'),{href:url,download:`${name}.csv`});document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url)}
+export const exportProductsCSV=(rows,name='amazonlens-products')=>dl(toCSV(rows,['asin','title','brand','category','price','monthly_sales','monthly_revenue','reviews','rating','weight','moat_score','opportunity_score','profit_estimate','margin_estimate','verdict','sellable','zero_comp_keywords','gold_keywords','source','updated_at']),name);
+export const exportKeywordsCSV=(rows,name='amazonlens-keywords')=>dl(toCSV(rows,['keyword','searchVol','iqScore','competing','trend','tier']),name);
+export const exportCompareCSV=(matrix,products,name='amazonlens-compare')=>{const h=['Metric',...products.map(p=>p.title?.slice(0,30)||p.asin)].join(',');const b=matrix.map(f=>[f.label,...f.values.map(v=>v.value)].join(',')).join('\n');dl(`${h}\n${b}`,name)};
+export const exportTableCSV=(rows,cols,name='export')=>dl(toCSV(rows,cols),name);
