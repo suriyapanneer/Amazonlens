@@ -2,6 +2,32 @@ import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { fmtINR } from '../lib/format';
 
+// ── Local fee calculation (mirrors backend exactly) ───────────────────────
+function amazonFees(sellPrice, weightKg = 0.5) {
+  const referral = sellPrice < 1000 ? 0 : parseFloat((sellPrice * 0.10).toFixed(2));
+  const closing  = 30;
+  const pickPack = 14;
+  let weightFee;
+  if      (weightKg <= 0.5) weightFee = 44;
+  else if (weightKg <= 1.0) weightFee = 58;
+  else if (weightKg <= 2.0) weightFee = 90;
+  else                      weightFee = 120 + Math.ceil((weightKg - 2) / 0.5) * 20;
+  const storage = 6.50;
+  return { referral, closing, pickPack, weightFee, storage, total: referral + closing + pickPack + weightFee + storage };
+}
+
+function calcProfitLocal(costs) {
+  const { sellPrice, cogs, packaging = 0, shipping = 0, ppc = 30, returnRate = 4, weight = 0.5 } = costs;
+  const fees       = amazonFees(sellPrice, weight);
+  const returnCost = parseFloat((sellPrice * (returnRate / 100)).toFixed(2));
+  const gstOut     = parseFloat(((sellPrice - cogs) * 0.18 * 0.55).toFixed(2));
+  const totalCost  = cogs + packaging + shipping + fees.total + ppc + returnCost + gstOut;
+  const profit     = parseFloat((sellPrice - totalCost).toFixed(2));
+  const margin     = parseFloat(((profit / sellPrice) * 100).toFixed(1));
+  return { fees, returnCost, gstOut, totalCost, profit, margin };
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 function InputRow({ label, name, value, onChange, unit = '₹', hint }) {
   return (
     <div>
@@ -38,23 +64,36 @@ export default function ProfitPage({ costs, setCosts, xrayData }) {
   const [products, setProducts] = useState([]);
   const [selAsin, setSelAsin] = useState('');
   const [form, setForm] = useState(costs || DEFAULT);
-  const [result, setResult] = useState(null);
-  const [loading, setLoading] = useState(false);
   const [saved, setSaved] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  useEffect(() => { api.getProducts().then(r => setProducts(r.products || [])).catch(() => {}); }, []);
+  // Always compute result locally — instant, no API needed
+  const result = calcProfitLocal(form);
+
+  // Load products for "from saved" mode
+  useEffect(() => {
+    api.getProducts().then(r => setProducts(r.products || [])).catch(() => {});
+  }, []);
+
+  // Propagate costs up whenever form changes
+  useEffect(() => {
+    if (setCosts) setCosts(form);
+  }, [form]);
 
   const onChange = e => setForm(f => ({ ...f, [e.target.name]: parseFloat(e.target.value) || 0 }));
 
-  const calc = async (saveAsin) => {
-    setLoading(true);
+  const saveToProduct = async (asin) => {
+    if (!asin) return;
+    setSaving(true);
     try {
-      const payload = saveAsin ? { ...form, asin: saveAsin } : form;
-      const r = await api.calcProfit(payload);
-      setResult(r); setCosts(form);
-      if (saveAsin) { setSaved('Saved ✅'); setTimeout(() => setSaved(''), 2500); }
-    } catch (e) { console.error(e); }
-    finally { setLoading(false); }
+      await api.calcProfit({ ...form, asin });
+      setSaved('Saved ✅');
+      setTimeout(() => setSaved(''), 2500);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const selectProduct = asin => {
@@ -66,12 +105,10 @@ export default function ProfitPage({ costs, setCosts, xrayData }) {
     setForm(prefill);
   };
 
-  useEffect(() => { calc(); }, []);
-
-  const invest = form.firstOrder * (form.cogs + form.packaging + form.shipping);
-  const monthRev = result ? form.firstOrder * form.sellPrice : 0;
-  const monthPro = result ? form.firstOrder * result.profit : 0;
-  const brkEven  = result ? Math.ceil(invest / Math.max(1, result.profit)) : 0;
+  const invest    = form.firstOrder * (form.cogs + form.packaging + form.shipping);
+  const monthRev  = form.firstOrder * form.sellPrice;
+  const monthPro  = form.firstOrder * result.profit;
+  const brkEven   = Math.ceil(invest / Math.max(1, result.profit));
 
   return (
     <div className="page-container">
@@ -97,7 +134,9 @@ export default function ProfitPage({ costs, setCosts, xrayData }) {
             </select>
           )}
           {mode === 'system' && selAsin && (
-            <button className="btn btn-green px-4 py-2 text-xs" onClick={() => calc(selAsin)}>💾 Save to Product</button>
+            <button className="btn btn-green px-4 py-2 text-xs" onClick={() => saveToProduct(selAsin)} disabled={saving}>
+              {saving ? '…' : '💾 Save to Product'}
+            </button>
           )}
           {saved && <span className="badge badge-green">{saved}</span>}
         </div>
@@ -107,7 +146,7 @@ export default function ProfitPage({ costs, setCosts, xrayData }) {
 
       <div className="page-section">
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.1fr] gap-6">
-          {/* Inputs */}
+          {/* ── Inputs ── */}
           <div className="flex flex-col gap-4">
             <div className="card animate-fade-up p-6">
               <div className="font-mono text-[10px] uppercase tracking-[2px] mb-4" style={{ color: 'var(--sub)' }}>Selling</div>
@@ -119,7 +158,9 @@ export default function ProfitPage({ costs, setCosts, xrayData }) {
                     color: form.sellPrice < 1000 ? 'var(--green)' : 'var(--red)',
                     border: `1px solid ${form.sellPrice < 1000 ? 'rgba(10,122,74,.2)' : 'rgba(192,37,53,.2)'}`
                   }}>
-                  {form.sellPrice < 1000 ? '✅ Under ₹1,000 → 0% Amazon Referral Fee!' : `⚠️ Above ₹1,000 → 10% Referral Fee = ${fmtINR(form.sellPrice * 0.1)}`}
+                  {form.sellPrice < 1000
+                    ? '✅ Under ₹1,000 → 0% Amazon Referral Fee!'
+                    : `⚠️ Above ₹1,000 → 10% Referral Fee = ${fmtINR(form.sellPrice * 0.1)}`}
                 </div>
               </div>
             </div>
@@ -142,78 +183,86 @@ export default function ProfitPage({ costs, setCosts, xrayData }) {
                 <SliderRow label="First Order Qty" name="firstOrder" value={form.firstOrder} onChange={onChange} min={50} max={1000} step={50} />
               </div>
             </div>
-
-            <button className="btn btn-amber animate-fade-up w-full py-3.5 text-sm rounded-xl" onClick={() => calc(mode === 'system' ? selAsin : null)} disabled={loading}>
-              {loading ? <span className="flex items-center justify-center gap-2"><div className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />Calculating…</span> : '⚡ Calculate Profit'}
-            </button>
           </div>
 
-          {/* Results */}
-          {result && (
-            <div className="flex flex-col gap-4">
-              {/* Hero */}
-              <div className="card animate-fade-up p-7 text-center relative overflow-hidden"
-                style={{
-                  background: result.profit > 0 ? 'linear-gradient(135deg,rgba(10,122,74,.06),rgba(10,122,74,.02))' : 'linear-gradient(135deg,rgba(192,37,53,.06),rgba(192,37,53,.02))',
-                  border: `1px solid ${result.profit > 0 ? 'rgba(10,122,74,.2)' : 'rgba(192,37,53,.2)'}`
-                }}>
-                <div className="absolute top-0 left-0 right-0 h-[3px] rounded-t-[14px]"
-                  style={{ background: `linear-gradient(90deg,${result.profit > 0 ? 'var(--green)' : 'var(--red)'},${result.profit > 0 ? 'var(--green)' : 'var(--red)'}60)` }} />
-                <div className="font-mono text-[10px] uppercase tracking-[2px] mb-2" style={{ color: 'var(--sub)' }}>Net Profit per Unit</div>
-                <div className="font-mono text-3xl sm:text-4xl lg:text-[54px] font-medium leading-none" style={{ color: result.profit > 0 ? 'var(--green)' : 'var(--red)' }}>{fmtINR(result.profit)}</div>
-                <div className="text-xl font-bold mt-2" style={{ color: result.profit > 0 ? 'var(--green)' : 'var(--red)' }}>{result.margin}% margin</div>
-                <div className="mt-2.5">
-                  <span className={`badge ${result.margin >= 40 ? 'badge-green' : result.margin >= 25 ? 'badge-amber' : 'badge-red'}`}>
-                    {result.margin >= 40 ? '🔥 Excellent' : result.margin >= 25 ? '✅ Good' : result.margin >= 15 ? '⚠️ Thin' : '❌ Not viable'}
-                  </span>
-                </div>
+          {/* ── Results (always visible) ── */}
+          <div className="flex flex-col gap-4">
+            {/* Hero */}
+            <div className="card animate-fade-up p-7 text-center relative overflow-hidden"
+              style={{
+                background: result.profit > 0
+                  ? 'linear-gradient(135deg,rgba(10,122,74,.06),rgba(10,122,74,.02))'
+                  : 'linear-gradient(135deg,rgba(192,37,53,.06),rgba(192,37,53,.02))',
+                border: `1px solid ${result.profit > 0 ? 'rgba(10,122,74,.2)' : 'rgba(192,37,53,.2)'}`
+              }}>
+              <div className="absolute top-0 left-0 right-0 h-[3px] rounded-t-[14px]"
+                style={{ background: `linear-gradient(90deg,${result.profit > 0 ? 'var(--green)' : 'var(--red)'},${result.profit > 0 ? 'var(--green)' : 'var(--red)'}60)` }} />
+              <div className="font-mono text-[10px] uppercase tracking-[2px] mb-2" style={{ color: 'var(--sub)' }}>Net Profit per Unit</div>
+              <div className="font-mono text-3xl sm:text-4xl lg:text-[54px] font-medium leading-none"
+                style={{ color: result.profit > 0 ? 'var(--green)' : 'var(--red)' }}>
+                {fmtINR(result.profit)}
               </div>
-
-              {/* Fee breakdown */}
-              <div className="card animate-fade-up animate-fade-up-1 p-5">
-                <div className="font-mono text-[10px] uppercase tracking-[2px] mb-3.5" style={{ color: 'var(--sub)' }}>Cost Breakdown</div>
-                {[
-                  { l: 'Sell Price',       v: form.sellPrice,       plus: true,  c: 'var(--green)' },
-                  { l: 'Product COGS',     v: form.cogs,            c: 'var(--red)' },
-                  { l: 'Packaging',        v: form.packaging,        c: 'var(--red)' },
-                  { l: 'Inbound Shipping', v: form.shipping,         c: 'var(--red)' },
-                  { l: 'Referral Fee',     v: result.fees.referral,  c: result.fees.referral === 0 ? 'var(--green)' : 'var(--red)', tag: result.fees.referral === 0 ? '₹0 ✅' : null },
-                  { l: 'Closing Fee',      v: result.fees.closing,   c: 'var(--red)' },
-                  { l: 'Pick & Pack',      v: result.fees.pickPack,  c: 'var(--red)' },
-                  { l: 'Weight Handling',  v: result.fees.weightFee, c: 'var(--red)' },
-                  { l: 'FBA Storage',      v: result.fees.storage,   c: 'var(--red)' },
-                  { l: 'PPC',              v: form.ppc,              c: 'var(--red)' },
-                  { l: 'Returns',          v: result.returnCost,     c: 'var(--red)' },
-                  { l: 'GST Net',          v: result.gstOut,         c: 'var(--red)' },
-                ].map((row, i) => (
-                  <div key={i} className="flex justify-between py-1.5 text-[12.5px]" style={{ borderBottom: '1px solid var(--border)' }}>
-                    <span style={{ color: 'var(--sub)' }}>{row.l}</span>
-                    <span className="font-mono font-bold" style={{ color: row.c }}>{row.tag || `${row.plus ? '+' : '-'}${fmtINR(row.v)}`}</span>
-                  </div>
-                ))}
-                <div className="flex justify-between pt-2.5 text-sm font-extrabold">
-                  <span style={{ color: 'var(--ink2)' }}>NET PROFIT</span>
-                  <span className="font-mono" style={{ color: result.profit > 0 ? 'var(--green)' : 'var(--red)' }}>{fmtINR(result.profit)} ({result.margin}%)</span>
-                </div>
+              <div className="text-xl font-bold mt-2"
+                style={{ color: result.profit > 0 ? 'var(--green)' : 'var(--red)' }}>
+                {result.margin}% margin
               </div>
-
-              {/* Investment */}
-              <div className="card-flat animate-fade-up animate-fade-up-2 p-5">
-                <div className="font-mono text-[10px] uppercase tracking-[2px] mb-3" style={{ color: 'var(--sub)' }}>Investment ({form.firstOrder} units)</div>
-                {[
-                  { l: 'Total Investment',   v: fmtINR(invest),      c: 'var(--amber)' },
-                  { l: 'Break-even (units)', v: `${brkEven} units`,  c: 'var(--sky)'   },
-                  { l: 'Monthly Revenue',    v: fmtINR(monthRev),    c: 'var(--green)' },
-                  { l: 'Monthly Profit',     v: fmtINR(monthPro),    c: 'var(--green)' },
-                ].map((row, i) => (
-                  <div key={i} className="flex justify-between py-2 text-[13px]" style={{ borderBottom: '1px solid var(--border)' }}>
-                    <span style={{ color: 'var(--sub)' }}>{row.l}</span>
-                    <span className="font-mono font-bold" style={{ color: row.c }}>{row.v}</span>
-                  </div>
-                ))}
+              <div className="mt-2.5">
+                <span className={`badge ${result.margin >= 40 ? 'badge-green' : result.margin >= 25 ? 'badge-amber' : 'badge-red'}`}>
+                  {result.margin >= 40 ? '🔥 Excellent' : result.margin >= 25 ? '✅ Good' : result.margin >= 15 ? '⚠️ Thin' : '❌ Not viable'}
+                </span>
               </div>
             </div>
-          )}
+
+            {/* Fee breakdown */}
+            <div className="card animate-fade-up animate-fade-up-1 p-5">
+              <div className="font-mono text-[10px] uppercase tracking-[2px] mb-3.5" style={{ color: 'var(--sub)' }}>Cost Breakdown</div>
+              {[
+                { l: 'Sell Price',       v: form.sellPrice,        plus: true,  c: 'var(--green)' },
+                { l: 'Product COGS',     v: form.cogs,              c: 'var(--red)' },
+                { l: 'Packaging',        v: form.packaging,         c: 'var(--red)' },
+                { l: 'Inbound Shipping', v: form.shipping,          c: 'var(--red)' },
+                { l: 'Referral Fee',     v: result.fees.referral,   c: result.fees.referral === 0 ? 'var(--green)' : 'var(--red)', tag: result.fees.referral === 0 ? '₹0 ✅' : null },
+                { l: 'Closing Fee',      v: result.fees.closing,    c: 'var(--red)' },
+                { l: 'Pick & Pack',      v: result.fees.pickPack,   c: 'var(--red)' },
+                { l: 'Weight Handling',  v: result.fees.weightFee,  c: 'var(--red)' },
+                { l: 'FBA Storage',      v: result.fees.storage,    c: 'var(--red)' },
+                { l: 'PPC',              v: form.ppc,               c: 'var(--red)' },
+                { l: 'Returns',          v: result.returnCost,      c: 'var(--red)' },
+                { l: 'GST Net',          v: result.gstOut,          c: 'var(--red)' },
+              ].map((row, i) => (
+                <div key={i} className="flex justify-between py-1.5 text-[12.5px]" style={{ borderBottom: '1px solid var(--border)' }}>
+                  <span style={{ color: 'var(--sub)' }}>{row.l}</span>
+                  <span className="font-mono font-bold" style={{ color: row.c }}>
+                    {row.tag || `${row.plus ? '+' : '-'}${fmtINR(row.v)}`}
+                  </span>
+                </div>
+              ))}
+              <div className="flex justify-between pt-2.5 text-sm font-extrabold">
+                <span style={{ color: 'var(--ink2)' }}>NET PROFIT</span>
+                <span className="font-mono" style={{ color: result.profit > 0 ? 'var(--green)' : 'var(--red)' }}>
+                  {fmtINR(result.profit)} ({result.margin}%)
+                </span>
+              </div>
+            </div>
+
+            {/* Investment */}
+            <div className="card-flat animate-fade-up animate-fade-up-2 p-5">
+              <div className="font-mono text-[10px] uppercase tracking-[2px] mb-3" style={{ color: 'var(--sub)' }}>
+                Investment ({form.firstOrder} units)
+              </div>
+              {[
+                { l: 'Total Investment',   v: fmtINR(invest),          c: 'var(--amber)' },
+                { l: 'Break-even (units)', v: `${brkEven} units`,      c: 'var(--sky)'   },
+                { l: 'Monthly Revenue',    v: fmtINR(monthRev),        c: 'var(--green)' },
+                { l: 'Monthly Profit',     v: fmtINR(monthPro),        c: result.profit > 0 ? 'var(--green)' : 'var(--red)' },
+              ].map((row, i) => (
+                <div key={i} className="flex justify-between py-2 text-[13px]" style={{ borderBottom: '1px solid var(--border)' }}>
+                  <span style={{ color: 'var(--sub)' }}>{row.l}</span>
+                  <span className="font-mono font-bold" style={{ color: row.c }}>{row.v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     </div>
