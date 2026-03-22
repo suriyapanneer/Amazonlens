@@ -9,16 +9,18 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Step 1: get existing session first — BEFORE rendering any routes
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
-      setLoading(false);
+      setLoading(false); // only ever set false AFTER session check
     });
 
+    // Step 2: listen for future auth changes (login, logout, token refresh)
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       setUser(session?.user ?? null);
-      setLoading(false);
+      // do NOT setLoading(false) here — already handled above
     });
 
     return () => subscription.unsubscribe();
