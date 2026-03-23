@@ -1,6 +1,12 @@
 import { supabase } from './supabase';
 
-const BASE = import.meta.env.VITE_API_URL || '/api';
+// In dev: VITE_API_URL is empty → use '/api' (Vite proxies /api → localhost:4000)
+// In prod: VITE_API_URL = 'https://amazonlens-1.onrender.com' (no trailing /api)
+//          We strip any accidental /api suffix then re-add it so routes always resolve.
+const _rawUrl = import.meta.env.VITE_API_URL || '';
+const BASE = _rawUrl
+  ? _rawUrl.replace(/\/api\/?$/, '').replace(/\/$/, '') + '/api'
+  : '/api';
 
 async function getAuthHeaders() {
   const { data: { session } } = await supabase.auth.getSession();
